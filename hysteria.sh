@@ -397,15 +397,15 @@ server_menu() {
         case $s_choice in
             1)
                 systemctl start hysteria && echo -e "${GREEN}服务器模式已启动${NC}"
-                sleep 10
+                sleep 2
                 ;;
             2)
                 systemctl stop hysteria && echo -e "${YELLOW}服务器模式已停止${NC}"
-                sleep 10
+                sleep 2
                 ;;
             3)
                 systemctl restart hysteria && echo -e "${GREEN}服务器模式已重启${NC}"
-                sleep 10
+                sleep 2
                 ;;
             4)
                 systemctl status hysteria --no-pager
@@ -413,7 +413,7 @@ server_menu() {
                 ;;
             5)
                 tail -n 50 "$LOG_FILE"
-                sleep 10
+                sleep 2
                 ;;
             6)
                 prompt_config
@@ -421,7 +421,7 @@ server_menu() {
                 systemctl restart hysteria
                 echo -e "${GREEN}新服务端配置已生成，客户端配置如下（请复制保存）：${NC}"
                 cat "$CLIENT_CONFIG_DIR/client.json"
-                sleep 10
+                sleep 2
                 ;;
             7)
                 # 自动生成默认配置并保存到 /root/H2
@@ -453,7 +453,7 @@ server_menu() {
 
                 echo -e "${GREEN}默认配置已生成并保存到 /root/H2/${HTTP_PORT}.json${NC}"
 
-                sleep 10
+                sleep 2
                 ;;
             0) break ;;
             *) echo -e "${RED}无效选择${NC}" ;;
