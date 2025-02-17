@@ -133,7 +133,7 @@ generate_config() {
 
     # 生成服务器的 config.yaml 配置
     cat > "$HYSTERIA_CONFIG" <<EOF
-listen: :$PORT
+listen: "0.0.0.0:$PORT"
 protocol: $PROTOCOL
 $TLS_CONFIG
 
@@ -155,14 +155,16 @@ log:
   level: info
   timestamp: true
   output: $LOG_FILE
-
-# 添加客户端配置文件路径
-clientConfig: "$CLIENT_CONFIG_DIR/$HTTP_PORT.json"
 EOF
+
+    # 如果客户端配置文件不需要生成，则不添加 clientConfig
+    if [ -f "$CLIENT_CONFIG_DIR/$HTTP_PORT.json" ]; then
+        echo "clientConfig: \"$CLIENT_CONFIG_DIR/$HTTP_PORT.json\"" >> "$HYSTERIA_CONFIG"
+    fi
 
     # 如果没有客户端配置文件，则生成客户端配置
     if [ ! -f "$CLIENT_CONFIG_DIR/$HTTP_PORT.json" ]; then
-        generate_client_configs
+        generate_client_configs "$HTTP_PORT"  # 传递 HTTP_PORT
     fi
 
     echo -e "${GREEN}[5/7] 服务器配置文件生成完成！${NC}"
@@ -171,9 +173,11 @@ EOF
 generate_client_configs() {
     echo -e "${YELLOW}生成客户端配置...${NC}"
 
-    # 提示用户输入 HTTP_PORT（端口号）
-    read -p "请输入HTTP端口号（默认8080）： " HTTP_PORT
-    HTTP_PORT=${HTTP_PORT:-8080}
+    # 如果 HTTP_PORT 参数为空，则提示用户输入（避免重复输入）
+    if [ -z "$HTTP_PORT" ]; then
+        read -p "请输入HTTP端口号（默认8080）： " HTTP_PORT
+        HTTP_PORT=${HTTP_PORT:-8080}
+    fi
 
     # 检查 /root/H2/ 目录下是否已存在该端口名的客户端配置文件，如果存在则删除旧文件
     if [ -f "$CLIENT_CONFIG_DIR/$HTTP_PORT.json" ]; then
@@ -215,14 +219,44 @@ EOF
 
     echo -e "${GREEN}客户端配置已保存到 $CLIENT_CONFIG_DIR/$HTTP_PORT.json${NC}"
 
-    # 更新 /etc/hysteria/config.yaml 配置文件，确保包含最新的客户端配置
-    if [ -f "/etc/hysteria/config.yaml" ]; then
-        echo -e "${YELLOW}正在更新服务端配置文件...${NC}"
-        # 这里你可以用 sed 或 echo 命令插入客户端配置
-        echo "客户端配置文件路径：$CLIENT_CONFIG_DIR/$HTTP_PORT.json" >> /etc/hysteria/config.yaml
-        echo -e "${GREEN}服务端配置文件已更新。${NC}"
+    # 删除并重新生成 /etc/hysteria/config.yaml 配置文件
+    echo -e "${YELLOW}正在删除现有的服务端配置文件并重新生成...${NC}"
+    rm -f /etc/hysteria/config.yaml  # 删除现有的配置文件
+
+    # 重新生成 /etc/hysteria/config.yaml 配置文件
+    cat > /etc/hysteria/config.yaml <<EOF
+listen: :$PORT
+protocol: $PROTOCOL
+tls:
+  cert: $HYSTERIA_ROOT/server.crt
+  key: $HYSTERIA_ROOT/server.key
+
+auth:
+  type: password
+  password: $PASSWORD
+
+bandwidth:
+  up: $UP_BANDWIDTH
+  down: $DOWN_BANDWIDTH
+
+quic:
+  initStreamReceiveWindow: $QUIC_WINDOW
+  maxStreamReceiveWindow: $QUIC_WINDOW
+  initConnReceiveWindow: $((QUIC_WINDOW * 2))
+  maxConnReceiveWindow: $((QUIC_WINDOW * 2))
+
+log:
+  level: info
+  timestamp: true
+  output: $LOG_FILE
+EOF
+
+    # 仅当客户端配置路径需要时才将其加入到配置文件中
+    if [ -f "$CLIENT_CONFIG_DIR/$HTTP_PORT.json" ]; then
+        echo "clientConfig: \"$CLIENT_CONFIG_DIR/$HTTP_PORT.json\"" >> /etc/hysteria/config.yaml
+        echo -e "${GREEN}服务端配置文件已更新并包含客户端配置。${NC}"
     else
-        echo -e "${RED}/etc/hysteria/config.yaml 文件不存在，请检查路径。${NC}"
+        echo -e "${YELLOW}客户端配置文件未生成，不会更新服务端配置。${NC}"
     fi
 }
 
@@ -275,11 +309,22 @@ EOF
 }
 
 #########################################
-# 性能优化（默认启用 BBR 拥塞控制，只使用 UDP 模式）
+# 性能优化（BBR 或 Brutal 拥塞控制）
 #########################################
 optimize_performance() {
     echo -e "${YELLOW}正在优化系统网络配置...${NC}"
-    cat >> /etc/sysctl.conf <<EOF
+    
+    # 提供选择拥塞控制算法的选项
+    echo -e "${YELLOW}请选择拥塞控制算法：${NC}"
+    echo "1. BBR"
+    echo "2. Brutal (Hysteria 官方算法)"
+    read -p "请输入选择 (1 或 2): " congestion_choice
+
+    case $congestion_choice in
+        1)
+            # 启用 BBR 拥塞控制
+            echo -e "${YELLOW}正在启用 BBR 拥塞控制...${NC}"
+            cat >> /etc/sysctl.conf <<EOF
 net.core.rmem_max=16777216
 net.core.wmem_max=16777216
 net.ipv4.tcp_rmem=4096 87380 16777216
@@ -287,8 +332,37 @@ net.ipv4.tcp_wmem=4096 65536 16777216
 net.ipv4.tcp_congestion_control=bbr
 net.ipv4.tcp_fastopen=3
 EOF
-    sysctl -p
-    echo -e "${GREEN}✓ 系统网络配置优化完成${NC}"
+            sysctl -p
+            echo -e "${GREEN}✓ BBR 拥塞控制已启用！${NC}"
+            ;;
+        2)
+            # 启用 Brutal 拥塞控制（Hysteria 官方算法）
+            echo -e "${YELLOW}正在启用 Brutal 拥塞控制...${NC}"
+            cat >> /etc/sysctl.conf <<EOF
+net.core.rmem_max=16777216
+net.core.wmem_max=16777216
+net.ipv4.tcp_rmem=4096 87380 16777216
+net.ipv4.tcp_wmem=4096 65536 16777216
+net.ipv4.tcp_congestion_control=brutal
+net.ipv4.tcp_fastopen=3
+EOF
+            sysctl -p
+            echo -e "${GREEN}✓ Brutal 拥塞控制已启用！${NC}"
+            ;;
+        *)
+            echo -e "${RED}无效选择，默认启用 BBR。${NC}"
+            cat >> /etc/sysctl.conf <<EOF
+net.core.rmem_max=16777216
+net.core.wmem_max=16777216
+net.ipv4.tcp_rmem=4096 87380 16777216
+net.ipv4.tcp_wmem=4096 65536 16777216
+net.ipv4.tcp_congestion_control=bbr
+net.ipv4.tcp_fastopen=3
+EOF
+            sysctl -p
+            echo -e "${GREEN}✓ 默认启用 BBR 拥塞控制！${NC}"
+            ;;
+    esac
 }
 
 #########################################
@@ -299,9 +373,7 @@ install_mode() {
     init_environment
     install_dependencies
     install_hysteria
-    prompt_config
-    generate_config
-    create_service_files
+    create_service_files  # 跳过配置步骤，直接创建服务文件
     optimize_performance
     echo -e "${GREEN}安装模式完成！请根据需要启动服务器或客户端服务。${NC}"
 }
@@ -324,21 +396,32 @@ server_menu() {
         read -p "请选择: " s_choice
         case $s_choice in
             1)
-                systemctl start hysteria && echo -e "${GREEN}服务器模式已启动${NC}" ;;
+                systemctl start hysteria && echo -e "${GREEN}服务器模式已启动${NC}"
+                sleep 10
+                ;;
             2)
-                systemctl stop hysteria && echo -e "${YELLOW}服务器模式已停止${NC}" ;;
+                systemctl stop hysteria && echo -e "${YELLOW}服务器模式已停止${NC}"
+                sleep 10
+                ;;
             3)
-                systemctl restart hysteria && echo -e "${GREEN}服务器模式已重启${NC}" ;;
+                systemctl restart hysteria && echo -e "${GREEN}服务器模式已重启${NC}"
+                sleep 10
+                ;;
             4)
-                systemctl status hysteria --no-pager ;;
+                systemctl status hysteria --no-pager
+                read -p "按回车键继续..." dummy
+                ;;
             5)
-                tail -n 50 "$LOG_FILE" ;;
+                tail -n 50 "$LOG_FILE"
+                sleep 10
+                ;;
             6)
                 prompt_config
                 generate_config
                 systemctl restart hysteria
                 echo -e "${GREEN}新服务端配置已生成，客户端配置如下（请复制保存）：${NC}"
                 cat "$CLIENT_CONFIG_DIR/client.json"
+                sleep 10
                 ;;
             7)
                 # 自动生成默认配置并保存到 /root/H2
@@ -370,11 +453,11 @@ server_menu() {
 
                 echo -e "${GREEN}默认配置已生成并保存到 /root/H2/${HTTP_PORT}.json${NC}"
 
+                sleep 10
                 ;;
             0) break ;;
             *) echo -e "${RED}无效选择${NC}" ;;
         esac
-        read -p "按回车键继续..." dummy
     done
 }
 
